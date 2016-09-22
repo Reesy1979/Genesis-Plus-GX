@@ -9,7 +9,8 @@
 #define ScePspDateTime SceDateTime
 
 #define SOUND_FREQUENCY 48000
-#define SOUND_SAMPLES 832
+#define SOUND_SAMPLES 800
+#define SOUND_BUFFER_LENGTH (SOUND_SAMPLES*2*10)
 
 void InitEmulator();
 void RunEmulator();
