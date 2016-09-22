@@ -48,9 +48,11 @@ extern const int ButtonMapId[];
 extern struct ButtonConfig ActiveConfig;
 extern char *ScreenshotPath;
 
-static short soundbuffer[SOUND_SAMPLES*2*10];
+static short soundbuffer[SOUND_BUFFER_LENGTH];
+static short soundbufferTemp[SOUND_BUFFER_LENGTH];
 static int soundPosWrite = 0;
 static int soundPosRead = 0;
+static volatile int soundCnt = 0;
 //static SceUID console_mtx;
 
 
@@ -232,7 +234,11 @@ void RunEmulator()
 //pl_rewind_realloc(&Rewinder);
 
   int frames_until_save = 0;
-
+  int lastSoundCnt = 0;
+  
+  soundPosRead = 0;
+  soundPosWrite = 0;
+  
   /* Resume sound */
   pl_snd_resume(0);
 
@@ -243,6 +249,17 @@ void RunEmulator()
   /* Main emulation loop */
   while (!ExitPSP&&bEmulate)
   {
+  	int soundCntNow=soundCnt;
+	//soundCnt = sound buffer position last read by audio device
+    	// need to keep in range of this
+	  // if we start catching up then we put in the brake on and let the audio device move on abit
+	if (lastSoundCnt>soundCntNow) soundCntNow+=100;
+	if (soundCntNow-lastSoundCnt < 80)
+	{
+		//wait for audio to catch ip
+		continue;
+	}
+	
     /* Rewind/save state */
     /*if (!Rewinding)
     {
@@ -332,17 +349,24 @@ void RunEmulator()
         ScreenY = (SCR_HEIGHT / 2) - (ScreenH / 2);
 
       }
-      //debugNetPrintf(DEBUG,"main %d %d \n",soundPosRead,soundPosWrite);
-      int size = audio_update(&soundbuffer[soundPosRead])*2;
-      //debugNetPrintf(DEBUG,"filling %d \n",size);
+      // Render audio into a temp buffer
+      int size = audio_update(&soundbufferTemp[0])*2;
 
-      soundPosRead +=size;
-      if(soundPosRead+size>=(SOUND_SAMPLES*2*10)){
-          soundPosRead = 0;
-      }
-      //if((soundPosRead-soundPosWrite)>=(SOUND_SAMPLES*2)||(soundPosRead-soundPosWrite)<0){
-        //sceKernelSignalSema(console_mtx, 1); //lock
-      //}
+		//Now copy into ring buffer
+	  if ((size+soundPosRead)> SOUND_BUFFER_LENGTH)
+	  {
+			int end = SOUND_BUFFER_LENGTH-soundPosRead;
+			int start = size-end;
+			memcpy(&soundbuffer[soundPosRead],&soundbufferTemp[0],sizeof(short)*end);
+			memcpy(&soundbuffer[0],&soundbufferTemp[end],sizeof(short)*start);
+			soundPosRead = start;
+	  }
+	  else
+	  {
+			memcpy(&soundbuffer[soundPosRead],&soundbufferTemp[0],sizeof(short)*size);
+			soundPosRead += size;
+	  }
+	  lastSoundCnt=((float)soundPosRead/(float)SOUND_BUFFER_LENGTH)*100.0;
       RenderVideo();
 
     }
@@ -430,13 +454,26 @@ static void AudioCallback(pl_snd_sample *buf,
         //sceKernelWaitSema(console_mtx, 1, 0); //lock
         //debugNetPrintf(DEBUG,"start %d %d \n",soundPosRead,soundPosWrite);
       //}
-      memcpy(ptr_s,&soundbuffer[soundPosWrite],sizeof(short)*samples*2);
-      soundPosWrite +=samples*2;
-      if(soundPosWrite+(samples*2)>=(SOUND_SAMPLES*2*10)){
-          soundPosWrite = 0;
-      }
+
+	  if (soundPosWrite+(samples*2) > (SOUND_BUFFER_LENGTH))
+	  {
+		  //Buffer position wraps
+			int end = SOUND_BUFFER_LENGTH-soundPosWrite;
+			int start = (samples*2)-end;
+			memcpy(ptr_s,&soundbuffer[soundPosWrite],sizeof(short)*end);
+			memcpy(ptr_s+end,&soundbuffer[0],sizeof(short)*start);
+			soundPosWrite = start;
+	  }
+	  else
+	  {
+			//Current buffer fits nicely
+			memcpy(ptr_s,&soundbuffer[soundPosWrite],sizeof(short)*samples*2);
+			soundPosWrite +=samples*2;
+	  }
   }
   else /* Render silence */
     for (i = 0; i < samples; i++)
       buf[i].stereo.l = buf[i].stereo.r = 0;
+
+  soundCnt=((float)soundPosWrite/(float)SOUND_BUFFER_LENGTH)*100.0;
 }
